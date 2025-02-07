@@ -33,7 +33,7 @@ git clone https://github.com/popey/measure-syft
 cd measure-syft
 uv venv
 source ./venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install requests
 ```
 
 Using venv:
@@ -42,7 +42,7 @@ git clone https://github.com/popey/measure-syft
 cd measure-syft
 python -m venv venv
 source ./venv/bin/activate
-pip install -r requirements.txt
+pip install requests
 ```
 
 ## Usage
