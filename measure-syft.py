@@ -22,13 +22,11 @@ CONFIG = {
 }
 
 def parse_arguments():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Measure Syft performance across versions')
     parser.add_argument('--pr', help='PR branch to test against main (e.g. feat/parallelize-file-hashing)')
     return parser.parse_args()
 
 def setup_environment():
-    """Configure environment variables and create necessary directories."""
     cpu_count = multiprocessing.cpu_count()
     os.environ['SYFT_PARALLELISM'] = str(cpu_count * 2)
     os.environ['SYFT_CHECK_FOR_APP_UPDATE'] = 'false'
@@ -37,35 +35,12 @@ def setup_environment():
         Path(directory).mkdir(exist_ok=True)
 
 def get_log_path(commit_id, run_number):
-    """Generate unique log file path for each run."""
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
     log_dir = Path(CONFIG['results_dir']) / 'logs'
     log_dir.mkdir(exist_ok=True)
     return log_dir / f"syft_{commit_id}_run{run_number}_{timestamp}.log"
 
-def test_pr_performance(pr_branch):
-    """Test performance between main and a PR branch."""
-    build_path = Path(CONFIG['build_dir'])
-    
-    # Ensure we have the latest main
-    subprocess.run(['git', 'fetch', 'origin', 'main'], cwd=build_path, check=True)
-    subprocess.run(['git', 'checkout', 'main'], cwd=build_path, check=True)
-    subprocess.run(['git', 'pull'], cwd=build_path, check=True)
-    
-    # Test main first
-    subprocess.run(['make', 'build'], cwd=build_path, check=True)
-    main_results = run_performance_test('main')
-    
-    # Now test PR branch
-    subprocess.run(['git', 'fetch', 'origin', pr_branch], cwd=build_path, check=True)
-    subprocess.run(['git', 'checkout', pr_branch], cwd=build_path, check=True)
-    subprocess.run(['make', 'build'], cwd=build_path, check=True)
-    pr_results = run_performance_test(pr_branch)
-    
-    return main_results, pr_results
-
 def cache_container_image(binary_path):
-    """Run syft once to cache the container image."""
     print(f"[info] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Caching container image")
     subprocess.run([
         str(binary_path),
@@ -75,22 +50,18 @@ def cache_container_image(binary_path):
     ], check=True)
 
 def get_commits_after_tag(tag):
-    """Get list of commits after the specified tag in chronological order."""
     build_path = Path(CONFIG['build_dir'])
     
-    # Get the commit hash for the tag
     tag_hash = subprocess.check_output(
         ['git', 'rev-list', '-n', '1', tag],
         cwd=build_path
     ).decode().strip()
     
-    # Get all commits after the tag in chronological order
     commits_output = subprocess.check_output(
         ['git', 'log', '--reverse', '--format=%H %s', f'{tag_hash}..main'],
         cwd=build_path
     ).decode()
     
-    # Parse commits into list of (hash, subject) tuples
     commits = []
     for line in commits_output.splitlines():
         if line:
@@ -101,31 +72,26 @@ def get_commits_after_tag(tag):
     return commits
 
 def get_latest_release():
-    """Get the latest Syft release version from GitHub API."""
     response = requests.get('https://api.github.com/repos/anchore/syft/releases/latest')
     response.raise_for_status()
     return response.json()['tag_name']
 
-def clone_and_build(version):
-    """Clone specific version of Syft and build it."""
-    build_path = Path(CONFIG['build_dir'])
+def clone_and_build(version, build_path=None):
+    if build_path is None:
+        build_path = Path(CONFIG['build_dir'])
     
-    # Clone repository if not exists
     if not (build_path / '.git').exists():
         subprocess.run(['git', 'clone', 'https://github.com/anchore/syft.git', str(build_path)], check=True)
     
-    # Checkout version and build
     subprocess.run(['git', 'checkout', version], cwd=build_path, check=True)
     subprocess.run(['make', 'build'], cwd=build_path, check=True)
 
 def run_syft_test():
-    """Run a single Syft test and return execution time in seconds."""
     binary = Path(CONFIG['build_dir']) / CONFIG['binary_path']
     
     if not binary.exists():
         raise FileNotFoundError(f"Syft binary not found at {binary}")
     
-    # Get commit ID from current git HEAD
     commit_id = subprocess.check_output(
         ['git', 'rev-parse', '--short', 'HEAD'],
         cwd=CONFIG['build_dir']
@@ -135,12 +101,11 @@ def run_syft_test():
     
     start_time = datetime.datetime.now()
     
-    # Create log file
     log_path = get_log_path(commit_id, CONFIG['current_run'])
     with open(log_path, 'w') as log_file:
         subprocess.run([
             str(binary),
-            '-v',  # Add verbose logging
+            '-v',
             '--platform', CONFIG['platform'],
             CONFIG['test_container'],
             '-o', 'syft-json=/dev/null'
@@ -152,16 +117,14 @@ def run_syft_test():
     return (end_time - start_time).total_seconds()
 
 def get_syft_env_vars():
-    """Get all environment variables that start with SYFT_"""
     return {k: v for k, v in os.environ.items() if k.startswith('SYFT_')}
 
 def run_performance_test(version):
-    """Run multiple iterations of Syft test and calculate statistics."""
     times = []
-    CONFIG['current_run'] = 0  # Initialize run counter
+    CONFIG['current_run'] = 0
     
     for i in range(CONFIG['iterations']):
-        CONFIG['current_run'] = i + 1  # Update run number
+        CONFIG['current_run'] = i + 1
         try:
             execution_time = run_syft_test()
             times.append(execution_time)
@@ -176,7 +139,6 @@ def run_performance_test(version):
     }
 
 def append_to_report(report_path, version, results, is_first=False, commit_desc=None):
-    """Append results to the report file."""
     if is_first:
         header = [
             f"# Syft Performance Test Results\n",
@@ -203,18 +165,18 @@ def append_to_report(report_path, version, results, is_first=False, commit_desc=
         else:
             f.write(f"| {version} | - | {results['min']:.2f} | {results['max']:.2f} | {results['avg']:.2f} |\n")
 
-
 def main():
     try:
         args = parse_arguments()
         setup_environment()
         
+        build_path = Path(CONFIG['build_dir'])
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
         report_path = Path(CONFIG['results_dir']) / f"results_{timestamp}.md"
         
-        # Initial clone and build of latest release to get a working binary
+        # Initial clone and build of latest release
         version = get_latest_release()
-        clone_and_build(version)
+        clone_and_build(version, build_path)
         binary = Path(CONFIG['build_dir']) / CONFIG['binary_path']
         
         # Cache container image once at start
@@ -222,7 +184,6 @@ def main():
         
         if args.pr:
             print(f"Testing PR branch: {args.pr}")
-            build_path = Path(CONFIG['build_dir'])
             
             # Test main
             subprocess.run(['git', 'checkout', 'main'], cwd=build_path, check=True)
@@ -245,8 +206,7 @@ def main():
             
             for short_hash, full_hash, subject in commits:
                 print(f"\nTesting commit: {short_hash} - {subject}")
-                subprocess.run(['git', 'checkout', full_hash], 
-                             cwd=CONFIG['build_dir'], check=True)
+                subprocess.run(['git', 'checkout', full_hash], cwd=build_path, check=True)
                 subprocess.run(['make', 'build'], cwd=build_path, check=True)
                 results = run_performance_test(short_hash)
                 results['full_hash'] = full_hash
