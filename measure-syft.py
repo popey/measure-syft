@@ -64,6 +64,16 @@ def test_pr_performance(pr_branch):
     
     return main_results, pr_results
 
+def cache_container_image(binary_path):
+    """Run syft once to cache the container image."""
+    print(f"[info] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Caching container image")
+    subprocess.run([
+        str(binary_path),
+        '--platform', CONFIG['platform'],
+        CONFIG['test_container'],
+        '-o', 'syft-json=/dev/null'
+    ], check=True)
+
 def get_commits_after_tag(tag):
     """Get list of commits after the specified tag in chronological order."""
     build_path = Path(CONFIG['build_dir'])
@@ -121,6 +131,8 @@ def run_syft_test():
         cwd=CONFIG['build_dir']
     ).decode().strip()
     
+    print(f"[info] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Start run {CONFIG['current_run']} for commit {commit_id}")
+    
     start_time = datetime.datetime.now()
     
     # Create log file
@@ -135,6 +147,8 @@ def run_syft_test():
         ], check=True, stdout=log_file, stderr=subprocess.STDOUT)
     
     end_time = datetime.datetime.now()
+    print(f"[info] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} End run {CONFIG['current_run']} for commit {commit_id}")
+    
     return (end_time - start_time).total_seconds()
 
 def get_syft_env_vars():
@@ -198,30 +212,34 @@ def main():
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
         report_path = Path(CONFIG['results_dir']) / f"results_{timestamp}.md"
         
+        # Initial clone and build of latest release to get a working binary
+        version = get_latest_release()
+        clone_and_build(version)
+        binary = Path(CONFIG['build_dir']) / CONFIG['binary_path']
+        
+        # Cache container image once at start
+        cache_container_image(binary)
+        
         if args.pr:
             print(f"Testing PR branch: {args.pr}")
-            # Ensure repo exists
             build_path = Path(CONFIG['build_dir'])
-            if not (build_path / '.git').exists():
-                subprocess.run(['git', 'clone', 'https://github.com/anchore/syft.git', str(build_path)], check=True)
             
-            main_results, pr_results = test_pr_performance(args.pr)
+            # Test main
+            subprocess.run(['git', 'checkout', 'main'], cwd=build_path, check=True)
+            subprocess.run(['make', 'build'], cwd=build_path, check=True)
+            main_results = run_performance_test('main')
             
-            # Generate report
+            # Test PR
+            subprocess.run(['git', 'checkout', args.pr], cwd=build_path, check=True)
+            subprocess.run(['make', 'build'], cwd=build_path, check=True)
+            pr_results = run_performance_test(args.pr)
+            
             append_to_report(report_path, 'main', main_results, is_first=True)
             append_to_report(report_path, args.pr, pr_results)
-            
         else:
-            # Original functionality
-            version = get_latest_release()
-            print(f"Testing Syft version: {version}")
-            
-            # Initial clone and test of release version
-            clone_and_build(version)
             results = run_performance_test(version)
             append_to_report(report_path, version, results, is_first=True)
             
-            # Get and test subsequent commits
             commits = get_commits_after_tag(version)
             print(f"Found {len(commits)} commits after {version}")
             
@@ -229,9 +247,7 @@ def main():
                 print(f"\nTesting commit: {short_hash} - {subject}")
                 subprocess.run(['git', 'checkout', full_hash], 
                              cwd=CONFIG['build_dir'], check=True)
-                subprocess.run(['make', 'build'], 
-                             cwd=CONFIG['build_dir'], check=True)
-                
+                subprocess.run(['make', 'build'], cwd=build_path, check=True)
                 results = run_performance_test(short_hash)
                 results['full_hash'] = full_hash
                 append_to_report(report_path, short_hash, results, commit_desc=subject)
